@@ -3,150 +3,224 @@
 //! Matches the [Sync Storage middleware](https://github.com/mozilla-services/server-syncstorage/blob/master/syncstorage/tweens.py) (tweens).
 use actix_web::{
     http::{header, Method, StatusCode},
-    middleware::{Middleware, Response, Started},
-    FromRequest, HttpRequest, HttpResponse, Result,
+    FromRequest, HttpResponse,
+    Error, web::Data,
 };
+
+use actix_web::dev::{Body, MessageBody, ServiceRequest, ServiceResponse};
+
+use actix_service::{Service, Transform};
+
 use futures::{
-    future::{self, Either},
+    future::{self, FutureResult,Either},
     Future,
+    Poll
 };
 
 use crate::db::{params, util::SyncTimestamp, Db};
-use crate::error::{ApiError, ApiErrorKind};
+use crate::error::{ApiErrorKind};
 use crate::server::ServerState;
-use crate::web::extractors::{BsoParam, CollectionParam, HawkIdentifier, PreConditionHeader};
+use crate::web::extractors::{BsoParam, CollectionParam, HawkIdentifier, PreConditionHeader, PreConditionHeaderOpt};
 
 /// Default Timestamp used for WeaveTimestamp middleware.
 #[derive(Default)]
 struct DefaultWeaveTimestamp(SyncTimestamp);
 
+pub struct WeaveTimestampMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service for WeaveTimestampMiddleware<S>
+where
+B: MessageBody,
+S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error= Error>,
+S::Future: 'static,
+{
+    type Request = ServiceRequest;
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+
+    // call super poll_ready()
+    fn poll_ready(&mut self) -> Poll<(), Self::Error>{
+        self.service.poll_ready()
+    }
+
+    fn call(&mut self, req: ServiceRequest) -> Self::Future {
+        Box::new(self.service.call(req).map(move |mut resp| {
+            let (req, payload) = req.into_parts();
+            if let Some(ts) = req.extensions().get::<DefaultWeaveTimestamp>() {
+                let weave_ts = if let Some(val) = resp.headers().get("X-Last-Modified") {
+                    let resp_ts = val
+                        .to_str()
+                        .map_err(|e| ApiErrorKind::Internal(format!("Invalid X-Last-Modfied response header: {}", e)).into())
+                        .unwrap()
+                        .parse::<f64>()
+                        .map_err(|e| ApiErrorKind::Internal(format!("Invalid X-Last-Modified response header: {}", e)).into())
+                        .unwrap();
+                    if resp_ts > ts.0.into() {
+                        resp_ts
+                    } else {
+                        ts.0.into()
+                    }
+                } else {
+                    ts.0.into()
+                };
+                resp.headers_mut().insert(
+                    header::HeaderName::from_static("x-weave-timestamp"),
+                    header::HeaderValue::from_str(&format!("{:.*}", 2, &weave_ts))
+                    .map_err(|e|{ ApiErrorKind::Internal(format!("Invalid X-Weave-Timestamp response header: {}", e)).into()})
+                    .unwrap()
+                )
+            };
+            resp
+        }))
+    }
+}
 /// Middleware to set the X-Weave-Timestamp header on all responses.
 pub struct WeaveTimestamp;
 
-impl<S> Middleware<S> for WeaveTimestamp {
-    /// Set the `DefaultWeaveTimestamp` and attach to the `HttpRequest`
-    fn start(&self, req: &HttpRequest<S>) -> Result<Started> {
-        req.extensions_mut()
-            .insert(DefaultWeaveTimestamp::default());
-        Ok(Started::Done)
+use futures::IntoFuture;
+
+impl WeaveTimestamp {
+    pub fn new() -> Self {
+        WeaveTimestamp::default()
     }
+}
 
-    /// Method is called when handler returns response,
-    /// but before sending http message to peer.
-    fn response(&self, req: &HttpRequest<S>, mut resp: HttpResponse) -> Result<Response> {
-        let ts = match req.extensions().get::<DefaultWeaveTimestamp>() {
-            Some(ts) => ts.0.as_seconds(),
-            None => return Ok(Response::Done(resp)),
-        };
+impl Default for WeaveTimestamp {
+    fn default() -> Self {
+        Self
+    }
+}
 
-        let weave_ts = if let Some(val) = resp.headers().get("X-Last-Modified") {
-            let resp_ts = val
-                .to_str()
-                .map_err(|e| {
-                    let error: ApiError = ApiErrorKind::Internal(format!(
-                        "Invalid X-Last-Modified response header: {}",
-                        e
-                    ))
-                    .into();
-                    error
-                })?
-                .parse::<f64>()
-                .map_err(|e| {
-                    let error: ApiError = ApiErrorKind::Internal(format!(
-                        "Invalid X-Last-Modified response header: {}",
-                        e
-                    ))
-                    .into();
-                    error
-                })?;
-            if resp_ts > ts {
-                resp_ts
-            } else {
-                ts
-            }
-        } else {
-            ts
-        };
-        resp.headers_mut().insert(
-            "x-weave-timestamp",
-            header::HeaderValue::from_str(&format!("{:.*}", 2, &weave_ts)).map_err(|e| {
-                let error: ApiError = ApiErrorKind::Internal(format!(
-                    "Invalid X-Weave-Timestamp response header: {}",
-                    e
-                ))
-                .into();
-                error
-            })?,
-        );
-        Ok(Response::Done(resp))
+impl<S, B> Transform<S> for WeaveTimestamp
+where
+S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error= Error>,
+S::Future: 'static,
+B: MessageBody,
+{
+    type Request = ServiceRequest;
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError=();
+    type Transform = WeaveTimestampMiddleware<S>;
+    type Future = FutureResult<Self::Transform, Self::InitError>;
+    //type Transform = WeaveTimestampMiddleware<S>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        future::ok(WeaveTimestampMiddleware{
+            service
+        })
     }
 }
 
 #[derive(Debug)]
-pub struct DbTransaction;
+pub struct DbTransactionMiddleware<S>{
+    service: S,
+}
 
-impl Middleware<ServerState> for DbTransaction {
-    /// Initialize the database
-    fn start(&self, req: &HttpRequest<ServerState>) -> Result<Started> {
+impl<S,B> Service for DbTransactionMiddleware<S>
+where
+B:MessageBody,
+S:Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error=Error>,
+S::Future: 'static,
+{
+    type Request = ServiceRequest;
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        self.service.poll_ready()
+    }
+
+    fn call(&mut self, sreq: ServiceRequest) -> Self::Future {
+        let (req, mut payload) = sreq.into_parts();
         let req = req.clone();
-        // We may or may not be operating on a collection
-        let collection = CollectionParam::from_request(&req, &())
+        let collection = CollectionParam::from_request(&req, &mut payload)
             .map(|param| param.collection.clone())
             .ok();
-        let user_id = HawkIdentifier::from_request(&req, &())?;
+        let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
         let in_transaction = collection.is_some();
+        let data:Data<ServerState> = sreq.app_data().unwrap();
 
-        let fut = req
-            .state()
-            .db_pool
-            .get()
-            .and_then(move |db| {
-                let db2 = db.clone();
-                let fut = if let Some(collection) = collection {
-                    // Take a read or write lock depending on request method
-                    let lc = params::LockCollection {
-                        user_id,
-                        collection,
-                    };
-                    Either::A(
-                        match *req.method() {
-                            Method::GET | Method::HEAD => db.lock_for_read(lc),
-                            _ => db.lock_for_write(lc),
-                        }
-                        .or_else(move |e| {
-                            // Middleware::response won't be called: rollback immediately
-                            db2.rollback().and_then(|_| future::err(e))
-                        }),
-                    )
-                } else {
-                    // If we're not operating on a collection, don't take a lock
-                    Either::B(future::ok(()))
+        data.db_pool.get().and_then(move |db| {
+            let db2 = db.clone();
+            let fut = if let Some(collection) = collection {
+                let lc = params::LockCollection{
+                    user_id,
+                    collection,
                 };
-                fut.and_then(move |_| {
-                    // track whether a transaction was started above via the
-                    // lock methods
-                    req.extensions_mut().insert((db, in_transaction));
-                    future::ok(None)
-                })
+                Either::A(
+                    match *req.method() {
+                        Method::GET | Method::HEAD => db.lock_for_read(lc),
+                        _ => db.lock_for_write(lc)
+                    }
+                    .or_else(move|e| {
+                        db2.rollback().and_then(|_| future::err(e))
+                    }),
+                )
+            }else {
+                Either::B(future::ok(()))
+            };
+            fut.and_then(move |_| {
+                // track whether a transaction was started above via the
+                // lock methods
+                req.extensions_mut().insert((db, in_transaction));
+                future::ok(None)
             })
-            .map_err(Into::into);
-        Ok(Started::Future(Box::new(fut)))
-    }
-
-    fn response(&self, req: &HttpRequest<ServerState>, resp: HttpResponse) -> Result<Response> {
-        if let Some((db, in_transaction)) = req.extensions().get::<(Box<dyn Db>, bool)>() {
-            if *in_transaction {
-                let fut = match resp.error() {
-                    None => db.commit(),
-                    Some(_) => db.rollback(),
-                };
-                let fut = fut.and_then(|_| Ok(resp)).map_err(Into::into);
-                return Ok(Response::Future(Box::new(fut)));
-            }
-        }
-        Ok(Response::Done(resp))
+        });
+        Box::new(self.service.call(sreq).map(move |mut sresp| {
+            if let Some((db, in_transaction)) = sresp.request().extensions().get::<(Box<dyn Db>, bool)>() {
+                if *in_transaction {
+                    match sresp.response().error() {
+                        None => db.commit(),
+                        Some(_) => db.rollback(),
+                    };
+                }
+            };
+            sresp
+        }))
     }
 }
+
+
+pub struct DbTransaction;
+
+impl DbTransaction {
+    pub fn new() -> Self {
+        DbTransaction::default()
+    }
+}
+
+impl Default for DbTransaction {
+    fn default() -> Self {
+        Self
+    }
+}
+
+
+impl<S, B> Transform<S> for DbTransaction
+where
+B: MessageBody,
+S: Service<Request =ServiceRequest, Response=ServiceResponse<B>, Error= Error>,
+S::Future: 'static,
+{
+    type Request = ServiceRequest;
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError=();
+    type Transform = DbTransactionMiddleware<S>;
+    type Future = FutureResult<Self::Transform, Self::InitError>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        future::ok(DbTransactionMiddleware{
+            service
+        })
+    }
+}
+
 
 /// The resource in question's Timestamp
 pub struct ResourceTimestamp(SyncTimestamp);
@@ -154,29 +228,81 @@ pub struct ResourceTimestamp(SyncTimestamp);
 #[derive(Debug)]
 pub struct PreConditionCheck;
 
-impl Middleware<ServerState> for PreConditionCheck {
-    /// This middleware must be wrapped by the `DbTransaction` middleware to ensure a Db object
-    /// is available.
-    fn start(&self, req: &HttpRequest<ServerState>) -> Result<Started> {
-        let precondition =
-            match <Option<PreConditionHeader> as FromRequest<ServerState>>::from_request(&req, &())
-            {
-                Ok(Some(precondition)) => precondition,
-                Ok(None) => return Ok(Started::Done),
-                Err(e) => return Ok(Started::Response(e.into())),
-            };
-        let user_id = HawkIdentifier::from_request(&req, &())?;
-        let db = <Box<dyn Db>>::from_request(&req, &())?;
-        let collection = CollectionParam::from_request(&req, &())
-            .ok()
-            .map(|v| v.collection);
-        let bso = BsoParam::from_request(&req, &()).ok().map(|v| v.bso);
-        let req = req.clone(); // Clone for the move to set the timestamp we get
-        let fut = db
+impl PreConditionCheck {
+    pub fn new() -> Self {
+        PreConditionCheck::default()
+    }
+}
+
+impl Default for PreConditionCheck {
+    fn default() -> Self {
+        Self
+    }
+}
+
+impl<S, B> Transform<S> for PreConditionCheck
+where
+B: MessageBody,
+S: Service<Request =ServiceRequest, Response=ServiceResponse<B>, Error= Error>,
+S::Future: 'static,
+{
+    type Request = ServiceRequest;
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError=();
+    type Transform = PreConditionCheckMiddleware<S>;
+    type Future = FutureResult<Self::Transform, Self::InitError>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        future::ok(PreConditionCheckMiddleware{
+            service
+        })
+    }
+}
+
+pub struct PreConditionCheckMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service for PreConditionCheckMiddleware<S>
+where
+B: MessageBody,
+S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error= Error>,
+S::Future: 'static,
+{
+    type Request = ServiceRequest;
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+
+    // call super poll_ready()
+    fn poll_ready(&mut self) -> Poll<(), Self::Error>{
+        self.service.poll_ready()
+    }
+
+    fn call(&mut self, sreq: ServiceRequest) -> Self::Future {
+        let (req, mut payload) = sreq.into_parts();
+        // Pre check
+        let precondition = match PreConditionHeaderOpt::from_request(&req, &mut payload) {
+            Ok(precond) =>
+                match precond.opt {
+                    Some(p) => p,
+                    None => return Box::new(future::ok(ServiceResponse::new(req, HttpResponse::Ok().finish().into_body())))
+                },
+            Err(e) => {
+                return Box::new(future::ok(ServiceResponse::new(req, HttpResponse::InternalServerError().body(format!("Err: {:?}", e)).into_body())))
+            }
+        };
+
+        let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
+        let db = <Box<dyn Db>>::from_request(&req, &mut payload);
+        let collection = CollectionParam::from_request(&req, &mut payload).ok().map(|v| v.collection);
+        let bso = BsoParam::from_request(&req, &mut payload).ok();
+
+        let fut = db.unwrap()
             .extract_resource(user_id, collection, bso)
+            .map_err(Into::into)
             .and_then(move |resource_ts: SyncTimestamp| {
-                // Ensure we stash the extracted resource timestamp on the request in case its
-                // requested elsewhere
                 req.extensions_mut().insert(ResourceTimestamp(resource_ts));
                 let status = match precondition {
                     PreConditionHeader::IfModifiedSince(header_ts) if resource_ts <= header_ts => {
@@ -185,49 +311,55 @@ impl Middleware<ServerState> for PreConditionCheck {
                     PreConditionHeader::IfUnmodifiedSince(header_ts) if resource_ts > header_ts => {
                         StatusCode::PRECONDITION_FAILED
                     }
-                    _ => return future::ok(None),
+                    _ => StatusCode::OK,
                 };
-                let resp = HttpResponse::build(status)
-                    .header("X-Last-Modified", resource_ts.as_header())
-                    .body(""); // 304 can't return any content
-                future::ok(Some(resp))
-            })
-            .map_err(Into::into);
-        Ok(Started::Future(Box::new(fut)))
-    }
+                if status != StatusCode::OK {
+                    return Box::new(ServiceResponse::new(
+                        req,
+                        HttpResponse::build(status)
+                        .header("X-Last-Modified", resource_ts.as_header())
+                        .body("")
+                    ));
+                };
+                self.service.call(sreq).map(|mut sresp| {
+                    let resp = sresp.response();
+                    if sresp.headers().contains_key("X-Last-Modified") {
+                        return Box::new(ServiceResponse::new(req, HttpResponse::build(StatusCode::OK).finish()))
+                    }
 
-    fn response(&self, req: &HttpRequest<ServerState>, mut resp: HttpResponse) -> Result<Response> {
-        // Ensure all outgoing requests from here have a X-Last-Modified
-        if resp.headers().contains_key("X-Last-Modified") {
-            return Ok(Response::Done(resp));
-        }
+                        // See if we already extracted one and use that if possible
+                    if let Some(resource_ts) = req.extensions().get::<ResourceTimestamp>() {
+                        let ts = resource_ts.0;
+                        if let Ok(ts_header) = header::HeaderValue::from_str(&ts.as_header()) {
+                            resp.headers_mut().insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
+                        }
+                        return Box::new(ServiceResponse::new(req, HttpResponse::build(StatusCode::OK).finish()));
+                    }
 
-        // See if we already extracted one and use that if possible
-        if let Some(resource_ts) = req.extensions().get::<ResourceTimestamp>() {
-            let ts = resource_ts.0;
-            if let Ok(ts_header) = header::HeaderValue::from_str(&ts.as_header()) {
-                resp.headers_mut().insert("X-Last-Modified", ts_header);
-            }
-            return Ok(Response::Done(resp));
-        }
+                    // Do the work needed to generate a timestamp otherwise
+                    let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
+                    let db = <Box<dyn Db>>::from_request(&req, &mut payload).unwrap();
+                    let collection = CollectionParam::from_request(&req, &mut payload)
+                        .ok()
+                        .map(|v| v.collection);
+                    let bso = BsoParam::from_request(&req, &mut payload).ok(); //.map(|v| v.bso);
+                    let fut = db
+                        .extract_resource(user_id, collection, bso)
+                        .and_then(move |resource_ts: SyncTimestamp| {
+                            if let Ok(ts_header) = header::HeaderValue::from_str(&resource_ts.as_header()) {
+                                resp.headers_mut().insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
+                            }
+                            ServiceResponse::new(req, *resp.clone())
+                        })
+                        .map_err(Into::into)
+                        .finish();
+                    return Box::new(future::ok(fut))
+                });
+            });
 
-        // Do the work needed to generate a timestamp otherwise
-        let user_id = HawkIdentifier::from_request(&req, &())?;
-        let db = <Box<dyn Db>>::from_request(&req, &())?;
-        let collection = CollectionParam::from_request(&req, &())
-            .ok()
-            .map(|v| v.collection);
-        let bso = BsoParam::from_request(&req, &()).ok().map(|v| v.bso);
-        let fut = db
-            .extract_resource(user_id, collection, bso)
-            .and_then(move |resource_ts: SyncTimestamp| {
-                if let Ok(ts_header) = header::HeaderValue::from_str(&resource_ts.as_header()) {
-                    resp.headers_mut().insert("X-Last-Modified", ts_header);
-                }
-                future::ok(resp)
-            })
-            .map_err(Into::into);
-        Ok(Response::Future(Box::new(fut)))
+        // post-check
+
+        Box::new(future::ok(fut))
     }
 }
 

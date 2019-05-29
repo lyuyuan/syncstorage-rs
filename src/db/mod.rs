@@ -132,7 +132,7 @@ pub trait Db: Send + Debug {
         &self,
         user_id: HawkIdentifier,
         collection: Option<String>,
-        bso: Option<String>,
+        bso: Option<BsoParam>,
     ) -> DbFuture<SyncTimestamp> {
         // If there's no collection, we return the overall storage timestamp
         let collection = match collection {
@@ -141,7 +141,7 @@ pub trait Db: Send + Debug {
         };
         // If there's no bso, return the collection
         let bso = match bso {
-            Some(bso) => bso,
+            Some(bso) => bso.bso,
             None => {
                 return Box::new(
                     self.get_collection_timestamp(params::GetCollectionTimestamp {

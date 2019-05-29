@@ -15,6 +15,9 @@ debug = 1
 [dependencies]
 actix = "0.8.2"
 actix-web = "0.7.19"
+actix-http-test = {version="0.2.0", features=["ssl"]}
+actix-http = "0.2.1"
+actix-service= "0.4.0"
 base64 = "0.10.1"
 cadence = "0.17.1"
 chrono = "0.4.6"

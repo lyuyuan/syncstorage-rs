@@ -1,5 +1,6 @@
 //! Error types for `web` modules.
 #![allow(clippy::single_match)]
+use std::error::Error;
 use std::fmt;
 
 use actix_web::http::{header::ToStrError, StatusCode};
@@ -65,6 +66,9 @@ pub enum HawkErrorKind {
 
     #[fail(display = "id property is too short")]
     TruncatedId,
+
+    #[fail(display = "General Hawk error: {}", _0)]
+    GeneralError(String)
 }
 
 /// An error occurred in an Actix extractor.
@@ -98,6 +102,7 @@ from_error!(InvalidKeyLength, ApiError, HawkErrorKind::InvalidKeyLength);
 from_error!(JsonError, ApiError, HawkErrorKind::Json);
 from_error!(MacError, ApiError, HawkErrorKind::Hmac);
 from_error!(ToStrError, ApiError, HawkErrorKind::Header);
+//from_error!(std::error::Error, ApiError, HawkErrorKind::Header);
 
 impl From<Context<HawkErrorKind>> for HawkError {
     fn from(inner: Context<HawkErrorKind>) -> Self {
