@@ -16,7 +16,7 @@ use serde::Deserialize;
 pub use self::error::{DbError, DbErrorKind};
 use self::util::SyncTimestamp;
 use crate::error::ApiError;
-use crate::web::extractors::HawkIdentifier;
+use crate::web::extractors::{BsoParam, HawkIdentifier};
 
 lazy_static! {
     /// For efficiency, it's possible to use fixed pre-determined IDs for

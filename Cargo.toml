@@ -13,8 +13,9 @@ edition = "2018"
 debug = 1
 
 [dependencies]
-actix = "0.8.2"
-actix-web = "0.7.19"
+#actix = "0.8.3"
+actix-web = "1.0.0"
+actix-rt = "0.2"
 actix-http-test = {version="0.2.0", features=["ssl"]}
 actix-http = "0.2.1"
 actix-service= "0.4.0"
