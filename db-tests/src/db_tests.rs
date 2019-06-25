@@ -4,18 +4,18 @@ use env_logger;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
 use syncstorage::db::mysql::{
-    models::{MysqlDb, Result, DEFAULT_BSO_TTL},
+    models::{Result, DEFAULT_BSO_TTL},
     pool::MysqlDbPool,
 };
 use syncstorage::db::util::SyncTimestamp;
-use syncstorage::db::{params, DbErrorKind, Sorting};
+use syncstorage::db::{Db, params, DbErrorKind, Sorting};
 use syncstorage::settings::{Secrets, ServerLimits, Settings};
 use syncstorage::web::extractors::{BsoQueryParams, HawkIdentifier};
 
 // distant future (year 2099) timestamp for tests
 pub const MAX_TIMESTAMP: u64 = 4_070_937_600_000;
 
-pub fn db() -> Result<MysqlDb> {
+pub fn db() -> Result<Box<dyn Db>> {
     let _ = env_logger::try_init();
     // inherit SYNC_DATABASE_URL from the env
     let settings = Settings::with_env_and_config_file(&None).unwrap();
@@ -31,7 +31,7 @@ pub fn db() -> Result<MysqlDb> {
     };
 
     let pool = MysqlDbPool::new(&settings)?;
-    pool.get_sync()
+    pool.get()
 }
 
 fn pbso(

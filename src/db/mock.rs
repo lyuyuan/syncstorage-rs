@@ -76,6 +76,26 @@ impl Db for MockDb {
     mock_db_method!(append_to_batch, AppendToBatch);
     mock_db_method!(get_batch, GetBatch, Option<results::GetBatch>);
     mock_db_method!(commit_batch, CommitBatch);
+
+    #[cfg(any(test, feature = "db_test"))]
+    mock_db_method!(get_collection_id, GetCollectionId);
+    #[cfg(any(test, feature = "db_test"))]
+    mock_db_method!(create_collection, CreateCollection);
+    #[cfg(any(test, feature = "db_test"))]
+    mock_db_method!(touch_collection, TouchCollection);
+
+    /*
+    #[cfg(any(test, feature = "db_test"))]
+    fn with_delta<T>(&self, delta: i64, f: &FnOnce(&Self) -> DbFuture<T>) -> DbFuture<T>
+    {
+        f(&self)
+    }
+    fn with_delta<T, F>(&self, delta: i64, f: F) -> DbFuture<T>
+    where
+        F: FnOnce(&Self) -> DbFuture<T> {
+        f(&self)
+    }
+*/
 }
 
 unsafe impl Send for MockDb {}

@@ -5,7 +5,7 @@ pub mod models;
 pub mod pool;
 mod schema;
 #[cfg(any(test, feature = "db_test"))]
-mod test;
+pub mod test;
 
 pub use self::pool::MysqlDbPool;
 

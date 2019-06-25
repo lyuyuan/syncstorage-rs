@@ -811,6 +811,30 @@ impl Db for MysqlDb {
         Option<results::GetBatch>
     );
     sync_db_method!(commit_batch, commit_batch_sync, CommitBatch);
+
+    #[cfg(any(test, feature = "db_test"))]
+    fn get_collection_id(&self, name: String) -> DbFuture<i32> {
+        let db = self.clone();
+        Box::new(self.thread_pool.spawn_handle(lazy(move || {
+            future::result(db.get_collection_id(&name).map_err(Into::into))
+        })))
+    }
+
+    #[cfg(any(test, feature = "db_test"))]
+    fn create_collection(&self, name: String) -> DbFuture<i32> {
+        let db = self.clone();
+        Box::new(self.thread_pool.spawn_handle(lazy(move || {
+            future::result(db.create_collection(&name).map_err(Into::into))
+        })))
+    }
+
+    #[cfg(any(test, feature = "db_test"))]
+    fn touch_collection(&self, param: params::TouchCollection) -> DbFuture<SyncTimestamp> {
+        let db = self.clone();
+        Box::new(self.thread_pool.spawn_handle(lazy(move || {
+            future::result(db.touch_collection(param.user_id.legacy_id as u32, param.collection_id).map_err(Into::into))
+        })))
+    }
 }
 
 #[derive(Debug, QueryableByName)]
