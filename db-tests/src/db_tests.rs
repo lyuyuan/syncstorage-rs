@@ -8,7 +8,7 @@ use syncstorage::db::mysql::{
     pool::MysqlDbPool,
 };
 use syncstorage::db::util::SyncTimestamp;
-use syncstorage::db::{Db, params, DbErrorKind, Sorting};
+use syncstorage::db::{Db, DbPool, params, DbErrorKind, Sorting};
 use syncstorage::settings::{Secrets, ServerLimits, Settings};
 use syncstorage::web::extractors::{BsoQueryParams, HawkIdentifier};
 
