@@ -12,7 +12,7 @@ use diesel::{
     sql_types::{BigInt, Integer, Nullable, Text},
     update, Connection, ExpressionMethods, GroupByDsl, OptionalExtension, QueryDsl, RunQueryDsl,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "db_test"))]
 use diesel_logger::LoggingConnection;
 use futures::{future, lazy};
 
@@ -76,9 +76,9 @@ pub struct MysqlDb {
 unsafe impl Send for MysqlDb {}
 
 pub struct MysqlDbInner {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "db_test")))]
     pub(super) conn: Conn,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "db_test"))]
     pub(super) conn: LoggingConnection<Conn>,
 
     session: RefCell<MysqlDbSession>,
@@ -107,9 +107,9 @@ impl MysqlDb {
         coll_cache: Arc<CollectionCache>,
     ) -> Self {
         let inner = MysqlDbInner {
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "db_test")))]
             conn,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "db_test"))]
             conn: LoggingConnection::new(conn),
             session: RefCell::new(Default::default()),
             thread_pool,
@@ -266,7 +266,8 @@ impl MysqlDb {
         self.get_storage_timestamp_sync(params.user_id)
     }
 
-    pub(super) fn create_collection(&self, name: &str) -> Result<i32> {
+    // XXX: pub(super)
+    pub fn create_collection(&self, name: &str) -> Result<i32> {
         // XXX: handle concurrent attempts at inserts
         let id = self.conn.transaction(|| {
             sql_query("INSERT INTO collections (name) VALUES (?)")
@@ -285,7 +286,8 @@ impl MysqlDb {
         })
     }
 
-    pub(super) fn get_collection_id(&self, name: &str) -> Result<i32> {
+    // XXX: pub(super)
+    pub fn get_collection_id(&self, name: &str) -> Result<i32> {
         if let Some(id) = self.coll_cache.get_id(name)? {
             return Ok(id);
         }
@@ -633,7 +635,8 @@ impl MysqlDb {
         Ok(names)
     }
 
-    pub(super) fn touch_collection(
+    // XXX: pub(super)
+    pub fn touch_collection(
         &self,
         user_id: u32,
         collection_id: i32,
@@ -707,8 +710,9 @@ impl MysqlDb {
         self.session.borrow().timestamp
     }
 
-    #[cfg(test)]
-    pub(super) fn with_delta<T, E, F>(&self, delta: i64, f: F) -> std::result::Result<T, E>
+    // XXX: pub(super)
+    #[cfg(any(test, feature = "db_test"))]
+    pub fn with_delta<T, E, F>(&self, delta: i64, f: F) -> std::result::Result<T, E>
     where
         F: FnOnce(&Self) -> std::result::Result<T, E>,
     {
