@@ -623,8 +623,8 @@ fn get_collection_timestamps() -> Result<()> {
         Ok(())
     })
 }
-/*
 
+/*
 #[test]
 fn get_collection_usage() -> Result<()> {
     let db = db()?;
