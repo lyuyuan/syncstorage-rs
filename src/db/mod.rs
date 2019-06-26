@@ -9,7 +9,10 @@ pub mod util;
 
 use std::fmt::Debug;
 
+//#[cfg(not(any(test, feature = "db_test")))]
 use futures::future::Future;
+//#[cfg(any(test, feature = "db_test"))]
+//use std::future::Future;
 use lazy_static::lazy_static;
 use serde::Deserialize;
 
@@ -42,7 +45,10 @@ lazy_static! {
     };
 }
 
-type DbFuture<T> = Box<Future<Item = T, Error = ApiError>>;
+//#[cfg(not(any(test, feature = "db_test")))]
+pub type DbFuture<T> = Box<Future<Item = T, Error = ApiError>>;
+//#[cfg(any(test, feature = "db_test"))]
+//pub type DbFuture<T> = Box<Future<Output = Result<T, ApiError>>>;
 
 pub trait DbPool: Sync + Debug {
     fn get(&self) -> DbFuture<Box<dyn Db>>;
