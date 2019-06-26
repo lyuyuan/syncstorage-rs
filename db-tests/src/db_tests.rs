@@ -122,11 +122,10 @@ pub fn hid(user_id: u32) -> HawkIdentifier {
     HawkIdentifier::new_legacy(u64::from(user_id))
 }
 
-/*
 #[test]
-fn bso_successfully_updates_single_values() -> Result<()> {
-    let db = db()?;
-
+async fn bso_successfully_updates_single_values() -> Result<()> {
+    let db = db().await?;
+/*
     let uid = 1;
     let coll = "clients";
     let bid = "testBSO";
@@ -164,9 +163,10 @@ fn bso_successfully_updates_single_values() -> Result<()> {
     // XXX:
     //assert_eq!(bso.expiry, modified + ttl);
     assert_eq!(bso.expiry, db.timestamp().as_i64() + i64::from(ttl * 1000));
+*/
     Ok(())
 }
-*/
+
 /*
 #[test]
 fn bso_modified_not_changed_on_ttl_touch() -> Result<()> {
