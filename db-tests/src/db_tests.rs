@@ -4,13 +4,10 @@ use env_logger;
 use futures::{compat::Future01CompatExt, executor::block_on};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
-use syncstorage::db::mysql::{
-    models::DEFAULT_BSO_TTL,
-    pool::MysqlDbPool,
-};
+use syncstorage::db::mysql::{models::DEFAULT_BSO_TTL, pool::MysqlDbPool};
 use syncstorage::db::util::SyncTimestamp;
-use syncstorage::db::{Db, DbFuture, DbPool, params, DbErrorKind, Sorting};
-use syncstorage::error::ApiError;
+use syncstorage::db::{params, Db, DbErrorKind, DbFuture, DbPool, Sorting};
+use syncstorage::error::{ApiError, ApiErrorKind};
 use syncstorage::settings::{Secrets, ServerLimits, Settings};
 use syncstorage::web::extractors::{BsoQueryParams, HawkIdentifier};
 
@@ -124,6 +121,35 @@ pub fn hid(user_id: u32) -> HawkIdentifier {
     HawkIdentifier::new_legacy(u64::from(user_id))
 }
 
+/*
+//pub fn with_delta<T, F>(db: Box<dyn Db>, delta: i64, f: F) -> Result<T>
+//where
+//    F: FnOnce(&Box<dyn Db>) -> Result<T>,
+pub async fn with_delta<T, F>(db: &Box<dyn Db>, delta: i64, f: F) -> Result<T>
+where
+    F: FnOnce(&Box<dyn Db>) -> DbFuture<T>,
+{
+    //let set = |ts| self.session.borrow_mut().timestamp = SyncTimestamp::from_i64(ts).unwrap();
+    let ts = db.timestamp().as_i64();
+    db.set_timestamp(SyncTimestamp::from_i64(ts + delta).unwrap());
+    let result = f(&db).compat().await;
+    db.set_timestamp(SyncTimestamp::from_i64(ts).unwrap());
+    result
+}
+*/
+
+macro_rules! with_delta {
+    ($db:expr, $delta:expr, $body:block) => {
+        let ts = $db.timestamp().as_i64();
+        $db.set_timestamp(SyncTimestamp::from_i64(ts + $delta).unwrap());
+        let result = $body.compat().await?;
+        $db.set_timestamp(SyncTimestamp::from_i64(ts).unwrap());
+        result
+    }
+
+}
+
+
 #[test]
 fn bso_successfully_updates_single_values() -> Result<()> {
     block_on(async {
@@ -167,317 +193,329 @@ fn bso_successfully_updates_single_values() -> Result<()> {
         //assert_eq!(bso.expiry, modified + ttl);
         assert_eq!(bso.expiry, db.timestamp().as_i64() + i64::from(ttl * 1000));
         Ok(())
-    }
-    )
+    })
 }
 
-/*
 #[test]
 fn bso_modified_not_changed_on_ttl_touch() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "clients";
-    let bid = "testBSO";
-    let timestamp = db.timestamp().as_i64();
+        let uid = 1;
+        let coll = "clients";
+        let bid = "testBSO";
+        let timestamp = db.timestamp().as_i64();
 
-    let bso1 = pbso(uid, coll, bid, Some("hello"), Some(1), Some(10));
-    db.with_delta(-100, |db| db.put_bso_sync(bso1))?;
+        let bso1 = pbso(uid, coll, bid, Some("hello"), Some(1), Some(10));
+        with_delta!(db, -100, { db.put_bso(bso1) });
 
-    let bso2 = pbso(uid, coll, bid, None, None, Some(15));
-    db.put_bso_sync(bso2)?;
-    let bso = db.get_bso_sync(gbso(uid, coll, bid))?.unwrap();
-    // ttl has changed
-    assert_eq!(bso.expiry, timestamp + (15 * 1000));
-    // modified has not changed
-    assert_eq!(bso.modified.as_i64(), timestamp - 100);
-    Ok(())
+        let bso2 = pbso(uid, coll, bid, None, None, Some(15));
+        db.put_bso(bso2).compat().await?;
+        let bso = db.get_bso(gbso(uid, coll, bid)).compat().await?.unwrap();
+        // ttl has changed
+        assert_eq!(bso.expiry, timestamp + (15 * 1000));
+        // modified has not changed
+        assert_eq!(bso.modified.as_i64(), timestamp - 100);
+        Ok(())
+    })
 }
 
 #[test]
 fn put_bso_updates() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "clients";
-    let bid = "1";
-    let bso1 = pbso(uid, coll, bid, Some("initial"), None, None);
-    db.put_bso_sync(bso1)?;
+        let uid = 1;
+        let coll = "clients";
+        let bid = "1";
+        let bso1 = pbso(uid, coll, bid, Some("initial"), None, None);
+        db.put_bso(bso1).compat().await?;
 
-    let payload = "Updated";
-    let sortindex = 200;
-    let bso2 = pbso(uid, coll, bid, Some(payload), Some(sortindex), None);
-    db.put_bso_sync(bso2)?;
+        let payload = "Updated";
+        let sortindex = 200;
+        let bso2 = pbso(uid, coll, bid, Some(payload), Some(sortindex), None);
+        db.put_bso(bso2).compat().await?;
 
-    let bso = db.get_bso_sync(gbso(uid, coll, bid))?.unwrap();
-    assert_eq!(Some(bso.payload), Some(payload.to_owned()));
-    assert_eq!(bso.sortindex, Some(sortindex));
-    assert_eq!(bso.modified, db.timestamp());
-    Ok(())
+        let bso = db.get_bso(gbso(uid, coll, bid)).compat().await?.unwrap();
+        assert_eq!(Some(bso.payload), Some(payload.to_owned()));
+        assert_eq!(bso.sortindex, Some(sortindex));
+        assert_eq!(bso.modified, db.timestamp());
+        Ok(())
+    })
 }
 
 #[test]
 fn get_bsos_limit_offset() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "clients";
-    let size = 12;
-    for i in 0..size {
-        let bso = pbso(
+        let uid = 1;
+        let coll = "clients";
+        let size = 12;
+        for i in 0..size {
+            let bso = pbso(
+                uid,
+                coll,
+                &i.to_string(),
+                Some(&format!("payload-{}", i)),
+                Some(i),
+                Some(DEFAULT_BSO_TTL),
+            );
+            //db.with_delta(i64::from(i) * 10, |db| db.put_bso_sync(bso))?;
+            with_delta!(&db, i64::from(i) * 10, { db.put_bso(bso) });
+        }
+
+        let bsos = db.get_bsos(gbsos(
             uid,
             coll,
-            &i.to_string(),
-            Some(&format!("payload-{}", i)),
-            Some(i),
-            Some(DEFAULT_BSO_TTL),
-        );
-        db.with_delta(i64::from(i) * 10, |db| db.put_bso_sync(bso))?;
-    }
+            &[],
+            MAX_TIMESTAMP,
+            0,
+            Sorting::Index,
+            0,
+            0,
+        )).compat().await?;
+        assert!(bsos.items.is_empty());
+        assert_eq!(bsos.offset, Some(0));
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        0,
-        Sorting::Index,
-        0,
-        0,
-    ))?;
-    assert!(bsos.items.is_empty());
-    assert_eq!(bsos.offset, Some(0));
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            0,
+            Sorting::Index,
+            -1,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), size as usize);
+        assert_eq!(bsos.offset, None);
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        0,
-        Sorting::Index,
-        -1,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), size as usize);
-    assert_eq!(bsos.offset, None);
+        let newer = 0;
+        let limit = 5;
+        let offset = 0;
+        // XXX: validation?
+        /*
+        let bsos = db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, 0, Sorting::Index, -1, 0))?;
+        .. etc
+         */
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            newer,
+            Sorting::Newest,
+            limit,
+            offset,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 5 as usize);
+        assert_eq!(bsos.offset, Some(5));
+        assert_eq!(bsos.items[0].id, "11");
+        assert_eq!(bsos.items[4].id, "7");
 
-    let newer = 0;
-    let limit = 5;
-    let offset = 0;
-    // XXX: validation?
-*/
-    /*
-    let bsos = db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, 0, Sorting::Index, -1, 0))?;
-    .. etc
-    */
-/*
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        newer,
-        Sorting::Newest,
-        limit,
-        offset,
-    ))?;
-    assert_eq!(bsos.items.len(), 5 as usize);
-    assert_eq!(bsos.offset, Some(5));
-    assert_eq!(bsos.items[0].id, "11");
-    assert_eq!(bsos.items[4].id, "7");
+        let bsos2 = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            newer,
+            Sorting::Index,
+            limit,
+            bsos.offset.unwrap(),
+        )).compat().await?;
+        assert_eq!(bsos2.items.len(), 5 as usize);
+        assert_eq!(bsos2.offset, Some(10));
+        assert_eq!(bsos2.items[0].id, "6");
+        assert_eq!(bsos2.items[4].id, "2");
 
-    let bsos2 = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        newer,
-        Sorting::Index,
-        limit,
-        bsos.offset.unwrap(),
-    ))?;
-    assert_eq!(bsos2.items.len(), 5 as usize);
-    assert_eq!(bsos2.offset, Some(10));
-    assert_eq!(bsos2.items[0].id, "6");
-    assert_eq!(bsos2.items[4].id, "2");
-
-    let bsos3 = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        newer,
-        Sorting::Index,
-        limit,
-        bsos2.offset.unwrap(),
-    ))?;
-    assert_eq!(bsos3.items.len(), 2 as usize);
-    assert_eq!(bsos3.offset, None);
-    assert_eq!(bsos3.items[0].id, "1");
-    assert_eq!(bsos3.items[1].id, "0");
-    Ok(())
+        let bsos3 = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            newer,
+            Sorting::Index,
+            limit,
+            bsos2.offset.unwrap(),
+        )).compat().await?;
+        assert_eq!(bsos3.items.len(), 2 as usize);
+        assert_eq!(bsos3.offset, None);
+        assert_eq!(bsos3.items[0].id, "1");
+        assert_eq!(bsos3.items[1].id, "0");
+        Ok(())
+    })
 }
 
 #[test]
 fn get_bsos_newer() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "clients";
-    let timestamp = db.timestamp().as_i64();
-    // XXX: validation
-    //db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, -1, Sorting::None, 10, 0)).is_err()
+        let uid = 1;
+        let coll = "clients";
+        let timestamp = db.timestamp().as_i64();
+        // XXX: validation
+        //db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, -1, Sorting::None, 10, 0)).is_err()
 
-    for i in (0..=2).rev() {
-        let pbso = pbso(
+        for i in (0..=2).rev() {
+            let pbso = pbso(
+                uid,
+                coll,
+                &format!("b{}", i),
+                Some("a"),
+                Some(1),
+                Some(DEFAULT_BSO_TTL),
+            );
+            //db.with_delta(-i * 10, |db| db.put_bso_sync(pbso))?;
+            with_delta!(&db, -i * 10, { db.put_bso(pbso) });
+        }
+
+        let bsos = db.get_bsos(gbsos(
             uid,
             coll,
-            &format!("b{}", i),
-            Some("a"),
-            Some(1),
-            Some(DEFAULT_BSO_TTL),
-        );
-        db.with_delta(-i * 10, |db| db.put_bso_sync(pbso))?;
-    }
+            &[],
+            MAX_TIMESTAMP,
+            timestamp as u64 - 30,
+            Sorting::Newest,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 3);
+        assert_eq!(bsos.items[0].id, "b0");
+        assert_eq!(bsos.items[1].id, "b1");
+        assert_eq!(bsos.items[2].id, "b2");
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        timestamp as u64 - 30,
-        Sorting::Newest,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 3);
-    assert_eq!(bsos.items[0].id, "b0");
-    assert_eq!(bsos.items[1].id, "b1");
-    assert_eq!(bsos.items[2].id, "b2");
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            timestamp as u64 - 20,
+            Sorting::Newest,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 2);
+        assert_eq!(bsos.items[0].id, "b0");
+        assert_eq!(bsos.items[1].id, "b1");
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        timestamp as u64 - 20,
-        Sorting::Newest,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 2);
-    assert_eq!(bsos.items[0].id, "b0");
-    assert_eq!(bsos.items[1].id, "b1");
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            timestamp as u64 - 10,
+            Sorting::Newest,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 1);
+        assert_eq!(bsos.items[0].id, "b0");
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        timestamp as u64 - 10,
-        Sorting::Newest,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 1);
-    assert_eq!(bsos.items[0].id, "b0");
-
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        timestamp as u64,
-        Sorting::Newest,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 0);
-    Ok(())
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            timestamp as u64,
+            Sorting::Newest,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 0);
+        Ok(())
+    })
 }
 
 #[test]
 fn get_bsos_sort() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "clients";
-    // XXX: validation again
-    //db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, -1, Sorting::None, 10, 0)).is_err()
+        let uid = 1;
+        let coll = "clients";
+        // XXX: validation again
+        //db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, -1, Sorting::None, 10, 0)).is_err()
 
-    for (revi, sortindex) in [1, 0, 2].iter().enumerate().rev() {
-        let pbso = pbso(
+        for (revi, sortindex) in [1, 0, 2].iter().enumerate().rev() {
+            let pbso = pbso(
+                uid,
+                coll,
+                &format!("b{}", revi),
+                Some("a"),
+                Some(*sortindex),
+                Some(DEFAULT_BSO_TTL),
+            );
+            //db.with_delta(-(revi as i64) * 10, |db| db.put_bso_sync(pbso))?;
+            with_delta!(&db, -(revi as i64) * 10, { db.put_bso(pbso) });
+        }
+
+        let bsos = db.get_bsos(gbsos(
             uid,
             coll,
-            &format!("b{}", revi),
-            Some("a"),
-            Some(*sortindex),
-            Some(DEFAULT_BSO_TTL),
-        );
-        db.with_delta(-(revi as i64) * 10, |db| db.put_bso_sync(pbso))?;
-    }
+            &[],
+            MAX_TIMESTAMP,
+            0,
+            Sorting::Newest,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 3);
+        assert_eq!(bsos.items[0].id, "b0");
+        assert_eq!(bsos.items[1].id, "b1");
+        assert_eq!(bsos.items[2].id, "b2");
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        0,
-        Sorting::Newest,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 3);
-    assert_eq!(bsos.items[0].id, "b0");
-    assert_eq!(bsos.items[1].id, "b1");
-    assert_eq!(bsos.items[2].id, "b2");
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            0,
+            Sorting::Oldest,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 3);
+        assert_eq!(bsos.items[0].id, "b2");
+        assert_eq!(bsos.items[1].id, "b1");
+        assert_eq!(bsos.items[2].id, "b0");
 
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        0,
-        Sorting::Oldest,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 3);
-    assert_eq!(bsos.items[0].id, "b2");
-    assert_eq!(bsos.items[1].id, "b1");
-    assert_eq!(bsos.items[2].id, "b0");
-
-    let bsos = db.get_bsos_sync(gbsos(
-        uid,
-        coll,
-        &[],
-        MAX_TIMESTAMP,
-        0,
-        Sorting::Index,
-        10,
-        0,
-    ))?;
-    assert_eq!(bsos.items.len(), 3);
-    assert_eq!(bsos.items[0].id, "b2");
-    assert_eq!(bsos.items[1].id, "b0");
-    assert_eq!(bsos.items[2].id, "b1");
-    Ok(())
+        let bsos = db.get_bsos(gbsos(
+            uid,
+            coll,
+            &[],
+            MAX_TIMESTAMP,
+            0,
+            Sorting::Index,
+            10,
+            0,
+        )).compat().await?;
+        assert_eq!(bsos.items.len(), 3);
+        assert_eq!(bsos.items[0].id, "b2");
+        assert_eq!(bsos.items[1].id, "b0");
+        assert_eq!(bsos.items[2].id, "b1");
+        Ok(())
+    })
 }
 
 #[test]
 fn delete_bsos_in_correct_collection() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let payload = "data";
-    db.put_bso_sync(pbso(uid, "clients", "b1", Some(payload), None, None))?;
-    db.put_bso_sync(pbso(uid, "crypto", "b1", Some(payload), None, None))?;
-    db.delete_bsos_sync(dbsos(uid, "clients", &["b1"]))?;
-    let bso = db.get_bso_sync(gbso(uid, "crypto", "b1"))?;
-    assert!(bso.is_some());
-    Ok(())
+        let uid = 1;
+        let payload = "data";
+        db.put_bso(pbso(uid, "clients", "b1", Some(payload), None, None)).compat().await?;
+        db.put_bso(pbso(uid, "crypto", "b1", Some(payload), None, None)).compat().await?;
+        db.delete_bsos(dbsos(uid, "clients", &["b1"])).compat().await?;
+        let bso = db.get_bso(gbso(uid, "crypto", "b1")).compat().await?;
+        assert!(bso.is_some());
+        Ok(())
+    })
 }
 
+/*
 #[test]
 fn get_storage_timestamp() -> Result<()> {
     let db = db()?;
@@ -494,87 +532,98 @@ fn get_storage_timestamp() -> Result<()> {
         Ok(())
     })
 }
+*/
 
 #[test]
 fn get_collection_id() -> Result<()> {
-    let db = db()?;
-    db.get_collection_id("bookmarks")?;
-    Ok(())
+    block_on(async {
+        let db = db().await?;
+        db.get_collection_id("bookmarks".to_owned()).compat().await?;
+        Ok(())
+    })
 }
 
 #[test]
 fn create_collection() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let name = "NewCollection";
-    let cid = db.create_collection(name)?;
-    assert_ne!(cid, 0);
-    let cid2 = db.get_collection_id(name)?;
-    assert_eq!(cid2, cid);
-    Ok(())
+        let name = "NewCollection";
+        let cid = db.create_collection(name.to_owned()).compat().await?;
+        assert_ne!(cid, 0);
+        let cid2 = db.get_collection_id(name.to_owned()).compat().await?;
+        assert_eq!(cid2, cid);
+        Ok(())
+    })
 }
 
 #[test]
 fn touch_collection() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let cid = db.create_collection("test")?;
-    db.touch_collection(1, cid)?;
-    Ok(())
+        let cid = db.create_collection("test".to_owned()).compat().await?;
+        db.touch_collection(params::TouchCollection { user_id: hid(1), collection_id: cid }).compat().await?;
+        Ok(())
+    })
 }
 
 #[test]
 fn delete_collection() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "NewCollection";
-    for bid in 1..=3 {
-        db.put_bso_sync(pbso(uid, coll, &bid.to_string(), Some("test"), None, None))?;
-    }
-    let ts = db.delete_collection_sync(params::DeleteCollection {
-        user_id: hid(uid),
-        collection: coll.to_owned(),
-    })?;
-    let ts2 = db.get_storage_timestamp_sync(hid(uid))?;
-    assert_eq!(ts2, ts);
+        let uid = 1;
+        let coll = "NewCollection";
+        for bid in 1..=3 {
+            db.put_bso(pbso(uid, coll, &bid.to_string(), Some("test"), None, None)).compat().await?;
+        }
+        let ts = db.delete_collection(params::DeleteCollection {
+            user_id: hid(uid),
+            collection: coll.to_owned(),
+        }).compat().await?;
+        let ts2 = db.get_storage_timestamp(hid(uid)).compat().await?;
+        assert_eq!(ts2, ts);
 
-    // make sure BSOs are deleted
-    for bid in 1..=3 {
-        let result = db.get_bso_sync(gbso(uid, coll, &bid.to_string()))?;
-        assert!(result.is_none());
-    }
+        // make sure BSOs are deleted
+        for bid in 1..=3 {
+            let result = db.get_bso(gbso(uid, coll, &bid.to_string())).compat().await?;
+            assert!(result.is_none());
+        }
 
-    let result = db.get_collection_timestamp_sync(params::GetCollectionTimestamp {
-        user_id: uid.into(),
-        collection: coll.to_string(),
-    });
-    match result.unwrap_err().kind() {
-        DbErrorKind::CollectionNotFound => (),
-        _ => panic!("Expected CollectionNotFound"),
-    };
-    Ok(())
+        let result = db.get_collection_timestamp(params::GetCollectionTimestamp {
+            user_id: uid.into(),
+            collection: coll.to_string(),
+        }).compat().await;
+        if !result.unwrap_err().is_colllection_not_found() {
+            panic!("Expected CollectionNotFound");
+        }
+        Ok(())
+    })
 }
 
 #[test]
 fn get_collection_timestamps() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "test";
-    let cid = db.create_collection(coll)?;
-    db.touch_collection(uid, cid)?;
-    let cols = db.get_collection_timestamps_sync(hid(uid))?;
-    assert!(cols.contains_key(coll));
-    assert_eq!(cols.get(coll), Some(&db.timestamp()));
+        let uid = 1;
+        let coll = "test";
+        let cid = db.create_collection(coll.to_owned()).compat().await?;
+        db.touch_collection(params::TouchCollection { user_id: hid(uid), collection_id: cid }).compat().await?;
+        let cols = db.get_collection_timestamps(hid(uid)).compat().await?;
+        assert!(cols.contains_key(coll));
+        assert_eq!(cols.get(coll), Some(&db.timestamp()));
 
-    let ts = db.get_collection_timestamp_sync(params::GetCollectionTimestamp {
-        user_id: uid.into(),
-        collection: coll.to_string(),
-    })?;
-    assert_eq!(Some(&ts), cols.get(coll));
-    Ok(())
+        let ts = db.get_collection_timestamp(params::GetCollectionTimestamp {
+            user_id: uid.into(),
+            collection: coll.to_string(),
+        }).compat().await?;
+        assert_eq!(Some(&ts), cols.get(coll));
+        Ok(())
+    })
 }
+/*
 
 #[test]
 fn get_collection_usage() -> Result<()> {
@@ -630,42 +679,51 @@ fn get_collection_counts() -> Result<()> {
     assert_eq!(counts, expected);
     Ok(())
 }
+*/
 
+// XXX:
+/*
 #[test]
 fn put_bso() -> Result<()> {
-    let db = db()?;
+    block_on(async {
+        let db = db().await?;
 
-    let uid = 1;
-    let coll = "NewCollection";
-    let bid = "b0";
-    let bso1 = pbso(uid, coll, bid, Some("foo"), Some(1), Some(DEFAULT_BSO_TTL));
-    db.put_bso_sync(bso1)?;
-    let ts = db.get_collection_timestamp_sync(params::GetCollectionTimestamp {
-        user_id: uid.into(),
-        collection: coll.to_string(),
-    })?;
-    assert_eq!(ts, db.timestamp());
-
-    let bso = db.get_bso_sync(gbso(uid, coll, bid))?.unwrap();
-    assert_eq!(&bso.payload, "foo");
-    assert_eq!(bso.sortindex, Some(1));
-
-    let bso2 = pbso(uid, coll, bid, Some("bar"), Some(2), Some(DEFAULT_BSO_TTL));
-    db.with_delta(19, |db| {
-        db.put_bso_sync(bso2)?;
-        let ts = db.get_collection_timestamp_sync(params::GetCollectionTimestamp {
+        let uid = 1;
+        let coll = "NewCollection";
+        let bid = "b0";
+        let bso1 = pbso(uid, coll, bid, Some("foo"), Some(1), Some(DEFAULT_BSO_TTL));
+        db.put_bso(bso1).compat().await?;
+        let ts = db.get_collection_timestamp(params::GetCollectionTimestamp {
             user_id: uid.into(),
             collection: coll.to_string(),
-        })?;
+        }).compat().await?;
         assert_eq!(ts, db.timestamp());
 
-        let bso = db.get_bso_sync(gbso(uid, coll, bid))?.unwrap();
-        assert_eq!(&bso.payload, "bar");
-        assert_eq!(bso.sortindex, Some(2));
+        let bso = db.get_bso(gbso(uid, coll, bid)).compat().await?.unwrap();
+        assert_eq!(&bso.payload, "foo");
+        assert_eq!(bso.sortindex, Some(1));
+
+        let bso2 = pbso(uid, coll, bid, Some("bar"), Some(2), Some(DEFAULT_BSO_TTL));
+        //db.with_delta(19, |db| {
+        with_delta!(&db, 19, {
+            db.put_bso(bso2).compat().await?;
+            let ts = db.get_collection_timestamp(params::GetCollectionTimestamp {
+                user_id: uid.into(),
+                collection: coll.to_string(),
+            }).compat().await?;
+            assert_eq!(ts, db.timestamp());
+
+            let bso = db.get_bso(gbso(uid, coll, bid)).compat().await?.unwrap();
+            assert_eq!(&bso.payload, "bar");
+            assert_eq!(bso.sortindex, Some(2));
+            futures::future::ok(())
+        });
         Ok(())
     })
 }
+*/
 
+/*
 #[test]
 fn post_bsos() -> Result<()> {
     let db = db()?;

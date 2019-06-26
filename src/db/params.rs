@@ -148,4 +148,3 @@ data! {
         collection_id: i32,
     }
 }
-

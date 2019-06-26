@@ -51,7 +51,8 @@ impl SyncTimestamp {
     /// Create a `SyncTimestamp` from an i64
     ///
     /// Only called from the db module
-    pub(super) fn from_i64(val: i64) -> Result<Self, DbError> {
+    // XXX: pub(super)
+    pub fn from_i64(val: i64) -> Result<Self, DbError> {
         if val < 0 {
             Err(DbErrorKind::Integrity(
                 "Invalid modified i64 (< 0)".to_owned(),

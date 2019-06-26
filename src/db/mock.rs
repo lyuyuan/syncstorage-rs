@@ -89,6 +89,10 @@ impl Db for MockDb {
         Default::default()
     }
 
+    #[cfg(any(test, feature = "db_test"))]
+    fn set_timestamp(&self, _: SyncTimestamp) {
+    }
+
     /*
     #[cfg(any(test, feature = "db_test"))]
     fn with_delta<T>(&self, delta: i64, f: &FnOnce(&Self) -> DbFuture<T>) -> DbFuture<T>

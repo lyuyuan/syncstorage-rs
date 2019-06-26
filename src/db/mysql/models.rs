@@ -266,8 +266,7 @@ impl MysqlDb {
         self.get_storage_timestamp_sync(params.user_id)
     }
 
-    // XXX: pub(super)
-    pub fn create_collection(&self, name: &str) -> Result<i32> {
+    pub(super) fn create_collection(&self, name: &str) -> Result<i32> {
         // XXX: handle concurrent attempts at inserts
         let id = self.conn.transaction(|| {
             sql_query("INSERT INTO collections (name) VALUES (?)")
@@ -286,8 +285,7 @@ impl MysqlDb {
         })
     }
 
-    // XXX: pub(super)
-    pub fn get_collection_id(&self, name: &str) -> Result<i32> {
+    pub(super) fn get_collection_id(&self, name: &str) -> Result<i32> {
         if let Some(id) = self.coll_cache.get_id(name)? {
             return Ok(id);
         }
@@ -635,8 +633,7 @@ impl MysqlDb {
         Ok(names)
     }
 
-    // XXX: pub(super)
-    pub fn touch_collection(
+    pub(super) fn touch_collection(
         &self,
         user_id: u32,
         collection_id: i32,
@@ -710,7 +707,7 @@ impl MysqlDb {
         self.session.borrow().timestamp
     }
 
-    // XXX: pub(super)
+    // XXX:
     #[cfg(any(test, feature = "db_test"))]
     pub fn with_delta<T, E, F>(&self, delta: i64, f: F) -> std::result::Result<T, E>
     where
@@ -839,6 +836,11 @@ impl Db for MysqlDb {
     #[cfg(any(test, feature = "db_test"))]
     fn timestamp(&self) -> SyncTimestamp {
         self.timestamp()
+    }
+
+    #[cfg(any(test, feature = "db_test"))]
+    fn set_timestamp(&self, timestamp: SyncTimestamp) {
+        self.session.borrow_mut().timestamp = timestamp;
     }
 }
 

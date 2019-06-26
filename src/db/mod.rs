@@ -197,6 +197,9 @@ pub trait Db: Send + Debug {
     #[cfg(any(test, feature = "db_test"))]
     fn timestamp(&self) -> SyncTimestamp;
 
+    #[cfg(any(test, feature = "db_test"))]
+    fn set_timestamp(&self, timestamp: SyncTimestamp);
+
 /*
     #[cfg(any(test, feature = "db_test"))]
     fn with_delta<T, F>(&self, delta: i64, f: F) -> DbFuture<T>
