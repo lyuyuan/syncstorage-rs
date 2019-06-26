@@ -835,6 +835,11 @@ impl Db for MysqlDb {
             future::result(db.touch_collection(param.user_id.legacy_id as u32, param.collection_id).map_err(Into::into))
         })))
     }
+
+    #[cfg(any(test, feature = "db_test"))]
+    fn timestamp(&self) -> SyncTimestamp {
+        self.timestamp()
+    }
 }
 
 #[derive(Debug, QueryableByName)]

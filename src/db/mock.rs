@@ -84,6 +84,11 @@ impl Db for MockDb {
     #[cfg(any(test, feature = "db_test"))]
     mock_db_method!(touch_collection, TouchCollection);
 
+    #[cfg(any(test, feature = "db_test"))]
+    fn timestamp(&self) -> SyncTimestamp {
+        Default::default()
+    }
+
     /*
     #[cfg(any(test, feature = "db_test"))]
     fn with_delta<T>(&self, delta: i64, f: &FnOnce(&Self) -> DbFuture<T>) -> DbFuture<T>

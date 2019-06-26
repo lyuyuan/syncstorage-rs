@@ -1,10 +1,11 @@
-use std::{collections::HashMap, result::Result as StdResult};
+use std::collections::HashMap;
 
 use env_logger;
+use futures::{compat::Future01CompatExt, executor::block_on};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
 use syncstorage::db::mysql::{
-    models::{Result, DEFAULT_BSO_TTL},
+    models::DEFAULT_BSO_TTL,
     pool::MysqlDbPool,
 };
 use syncstorage::db::util::SyncTimestamp;
@@ -16,7 +17,9 @@ use syncstorage::web::extractors::{BsoQueryParams, HawkIdentifier};
 // distant future (year 2099) timestamp for tests
 pub const MAX_TIMESTAMP: u64 = 4_070_937_600_000;
 
-pub async fn db() -> StdResult<Box<dyn Db>, ApiError> {
+pub type Result<T> = std::result::Result<T, ApiError>;
+
+pub async fn db() -> Result<Box<dyn Db>> {
     let _ = env_logger::try_init();
     // inherit SYNC_DATABASE_URL from the env
     let settings = Settings::with_env_and_config_file(&None).unwrap();
@@ -31,7 +34,6 @@ pub async fn db() -> StdResult<Box<dyn Db>, ApiError> {
         master_secret: Secrets::default(),
     };
 
-    use futures::compat::Future01CompatExt;
     let pool = MysqlDbPool::new(&settings).unwrap();
     pool.get().compat().await
 }
@@ -123,48 +125,50 @@ pub fn hid(user_id: u32) -> HawkIdentifier {
 }
 
 #[test]
-async fn bso_successfully_updates_single_values() -> Result<()> {
-    let db = db().await?;
-/*
-    let uid = 1;
-    let coll = "clients";
-    let bid = "testBSO";
-    let sortindex = 1;
-    let ttl = 3600 * 1000;
-    let bso1 = pbso(
-        uid,
-        coll,
-        bid,
-        Some("initial value"),
-        Some(sortindex),
-        Some(ttl),
-    );
-    db.put_bso_sync(bso1)?;
+fn bso_successfully_updates_single_values() -> Result<()> {
+    block_on(async {
+        let db = db().await?;
 
-    let payload = "Updated payload";
-    let bso2 = pbso(uid, coll, bid, Some(payload), None, None);
-    db.put_bso_sync(bso2)?;
+        let uid = 1;
+        let coll = "clients";
+        let bid = "testBSO";
+        let sortindex = 1;
+        let ttl = 3600 * 1000;
+        let bso1 = pbso(
+            uid,
+            coll,
+            bid,
+            Some("initial value"),
+            Some(sortindex),
+            Some(ttl),
+        );
+        db.put_bso(bso1).compat().await?;
 
-    let bso = db.get_bso_sync(gbso(uid, coll, bid))?.unwrap();
-    assert_eq!(bso.modified, db.timestamp());
-    assert_eq!(bso.payload, payload);
-    assert_eq!(bso.sortindex, Some(sortindex));
-    // XXX: go version assumes ttl was updated here?
-    //assert_eq!(bso.expiry, modified + ttl);
-    assert_eq!(bso.expiry, db.timestamp().as_i64() + i64::from(ttl * 1000));
+        let payload = "Updated payload";
+        let bso2 = pbso(uid, coll, bid, Some(payload), None, None);
+        db.put_bso(bso2).compat().await?;
 
-    let sortindex = 2;
-    let bso2 = pbso(uid, coll, bid, None, Some(sortindex), None);
-    db.put_bso_sync(bso2)?;
-    let bso = db.get_bso_sync(gbso(uid, coll, bid))?.unwrap();
-    assert_eq!(bso.modified, db.timestamp());
-    assert_eq!(bso.payload, payload);
-    assert_eq!(bso.sortindex, Some(sortindex));
-    // XXX:
-    //assert_eq!(bso.expiry, modified + ttl);
-    assert_eq!(bso.expiry, db.timestamp().as_i64() + i64::from(ttl * 1000));
-*/
-    Ok(())
+        let bso = db.get_bso(gbso(uid, coll, bid)).compat().await?.unwrap();
+        assert_eq!(bso.modified, db.timestamp());
+        assert_eq!(bso.payload, payload);
+        assert_eq!(bso.sortindex, Some(sortindex));
+        // XXX: go version assumes ttl was updated here?
+        //assert_eq!(bso.expiry, modified + ttl);
+        assert_eq!(bso.expiry, db.timestamp().as_i64() + i64::from(ttl * 1000));
+
+        let sortindex = 2;
+        let bso2 = pbso(uid, coll, bid, None, Some(sortindex), None);
+        db.put_bso(bso2).compat().await?;
+        let bso = db.get_bso(gbso(uid, coll, bid)).compat().await?.unwrap();
+        assert_eq!(bso.modified, db.timestamp());
+        assert_eq!(bso.payload, payload);
+        assert_eq!(bso.sortindex, Some(sortindex));
+        // XXX:
+        //assert_eq!(bso.expiry, modified + ttl);
+        assert_eq!(bso.expiry, db.timestamp().as_i64() + i64::from(ttl * 1000));
+        Ok(())
+    }
+    )
 }
 
 /*

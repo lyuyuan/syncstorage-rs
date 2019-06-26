@@ -194,6 +194,9 @@ pub trait Db: Send + Debug {
         params: params::TouchCollection,
     ) -> DbFuture<SyncTimestamp>;
 
+    #[cfg(any(test, feature = "db_test"))]
+    fn timestamp(&self) -> SyncTimestamp;
+
 /*
     #[cfg(any(test, feature = "db_test"))]
     fn with_delta<T, F>(&self, delta: i64, f: F) -> DbFuture<T>
