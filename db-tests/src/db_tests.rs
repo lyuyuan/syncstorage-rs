@@ -4,7 +4,7 @@ use env_logger;
 use futures::compat::Future01CompatExt;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
-use codegen::async_test;
+use codegen::{async_test, db_test};
 use syncstorage::db::mysql::{models::DEFAULT_BSO_TTL, pool::MysqlDbPool};
 use syncstorage::db::util::SyncTimestamp;
 use syncstorage::db::{params, Db, DbPool, Sorting};
@@ -17,7 +17,7 @@ pub const MAX_TIMESTAMP: u64 = 4_070_937_600_000;
 
 pub type Result<T> = std::result::Result<T, ApiError>;
 
-pub async fn db() -> Result<Box<dyn Db>> {
+pub async fn mysql_db() -> Result<Box<dyn Db>> {
     let _ = env_logger::try_init();
     // inherit SYNC_DATABASE_URL from the env
     let settings = Settings::with_env_and_config_file(&None).unwrap();
@@ -134,10 +134,8 @@ macro_rules! with_delta {
     };
 }
 
-#[async_test]
-async fn bso_successfully_updates_single_values() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn bso_successfully_updates_single_values(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bid = "testBSO";
@@ -178,10 +176,8 @@ async fn bso_successfully_updates_single_values() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn bso_modified_not_changed_on_ttl_touch() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn bso_modified_not_changed_on_ttl_touch(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bid = "testBSO";
@@ -200,10 +196,8 @@ async fn bso_modified_not_changed_on_ttl_touch() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn put_bso_updates() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn put_bso_updates(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bid = "1";
@@ -222,10 +216,8 @@ async fn put_bso_updates() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_bsos_limit_offset() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_bsos_limit_offset(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let size = 12;
@@ -323,10 +315,8 @@ async fn get_bsos_limit_offset() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_bsos_newer() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_bsos_newer(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let timestamp = db.timestamp().as_i64();
@@ -401,10 +391,8 @@ async fn get_bsos_newer() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_bsos_sort() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_bsos_sort(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     // XXX: validation again
@@ -469,10 +457,8 @@ async fn get_bsos_sort() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn delete_bsos_in_correct_collection() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn delete_bsos_in_correct_collection(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let payload = "data";
     db.put_bso(pbso(uid, "clients", "b1", Some(payload), None, None)).compat().await?;
@@ -483,10 +469,8 @@ async fn delete_bsos_in_correct_collection() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_storage_timestamp() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_storage_timestamp(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     db.create_collection("col1".to_owned()).compat().await?;
     let col2 = db.create_collection("col2".to_owned()).compat().await?;
@@ -500,17 +484,14 @@ async fn get_storage_timestamp() -> Result<()> {
     })
 }
 
-#[async_test]
-async fn get_collection_id() -> Result<()> {
-    let db = db().await?;
+#[db_test]
+async fn get_collection_id(db: Box<dyn Db>) -> Result<()> {
     db.get_collection_id("bookmarks".to_owned()).compat().await?;
     Ok(())
 }
 
-#[async_test]
-async fn create_collection() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn create_collection(db: Box<dyn Db>) -> Result<()> {
     let name = "NewCollection";
     let cid = db.create_collection(name.to_owned()).compat().await?;
     assert_ne!(cid, 0);
@@ -519,19 +500,15 @@ async fn create_collection() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn touch_collection() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn touch_collection(db: Box<dyn Db>) -> Result<()> {
     let cid = db.create_collection("test".to_owned()).compat().await?;
     db.touch_collection(params::TouchCollection { user_id: hid(1), collection_id: cid }).compat().await?;
     Ok(())
 }
 
-#[async_test]
-async fn delete_collection() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn delete_collection(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "NewCollection";
     for bid in 1..=3 {
@@ -558,10 +535,8 @@ async fn delete_collection() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_collection_timestamps() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_collection_timestamps(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "test";
     let cid = db.create_collection(coll.to_owned()).compat().await?;
@@ -578,10 +553,8 @@ async fn get_collection_timestamps() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_collection_usage() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_collection_usage(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let mut expected = HashMap::new();
     let mut rng = thread_rng();
@@ -612,10 +585,8 @@ async fn get_collection_usage() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_collection_counts() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_collection_counts(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let mut expected = HashMap::new();
     let mut rng = thread_rng();
@@ -633,10 +604,8 @@ async fn get_collection_counts() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn put_bso() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn put_bso(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "NewCollection";
     let bid = "b0";
@@ -668,10 +637,8 @@ async fn put_bso() -> Result<()> {
     })
 }
 
-#[async_test]
-async fn post_bsos() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn post_bsos(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "NewCollection";
     let result = db.post_bsos(params::PostBsos {
@@ -729,10 +696,8 @@ async fn post_bsos() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_bso() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_bso(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bid = "b0";
@@ -748,10 +713,8 @@ async fn get_bso() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_bsos() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_bsos(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let sortindexes = vec![1, 3, 4, 2, 0];
@@ -812,10 +775,8 @@ async fn get_bsos() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn get_bso_timestamp() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn get_bso_timestamp(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bid = "b0";
@@ -830,10 +791,8 @@ async fn get_bso_timestamp() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn delete_bso() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn delete_bso(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bid = "b0";
@@ -844,10 +803,8 @@ async fn delete_bso() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn delete_bsos() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn delete_bsos(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     let bids = (0..=2).map(|i| format!("b{}", i));
@@ -878,29 +835,24 @@ async fn delete_bsos() -> Result<()> {
 }
 
 /*
-#[async_test]
-async fn usage_stats() -> Result<()> {
-    let db = db().await?;
+#[db_test]
+async fn usage_stats(db: Box<dyn Db>) -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn purge_expired() -> Result<()> {
-    let db = db().await?;
+#[db_test]
+async fn purge_expired(db: Box<dyn Db>) -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn optimize() -> Result<()> {
-    let db = db().await?;
+#[db_test]
+async fn optimize(db: Box<dyn Db>) -> Result<()> {
     Ok(())
 }
 */
 
-#[async_test]
-async fn delete_storage() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn delete_storage(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let bid = "test";
     let coll = "my_collection";
@@ -917,10 +869,8 @@ async fn delete_storage() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn lock_for_read() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn lock_for_read(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     db.lock_for_read(params::LockCollection {
@@ -933,10 +883,8 @@ async fn lock_for_read() -> Result<()> {
     Ok(())
 }
 
-#[async_test]
-async fn lock_for_write() -> Result<()> {
-    let db = db().await?;
-
+#[db_test]
+async fn lock_for_write(db: Box<dyn Db>) -> Result<()> {
     let uid = 1;
     let coll = "clients";
     db.lock_for_write(params::LockCollection {
