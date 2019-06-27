@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 #diesel = { version = "1.4.2", features = ["mysql", "r2d2"] }
+codegen = { version = "0.1.0", path = "../codegen" }
 env_logger = "0.6.1"
 futures-preview = { git = "https://github.com/rust-lang-nursery/futures-rs", rev = "744ece9", features = ["compat"] }
 # TODO: switch back to default (use_ring) after the actix-web 1.0 upgrade

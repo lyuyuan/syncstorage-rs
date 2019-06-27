@@ -305,6 +305,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codegen"
+version = "0.1.0"
+dependencies = [
+ "quote 0.6.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "syn 0.15.38 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "config"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -464,6 +472,7 @@ dependencies = [
 name = "db-tests"
 version = "0.1.0"
 dependencies = [
+ "codegen 0.1.0",
  "env_logger 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-preview 0.3.0-alpha.16 (git+https://github.com/rust-lang-nursery/futures-rs?rev=744ece9)",
  "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
