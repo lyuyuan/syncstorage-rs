@@ -274,7 +274,8 @@ async fn get_bsos_limit_offset() -> Result<()> {
     /*
     let bsos = db.get_bsos_sync(gbsos(uid, coll, &[], MAX_TIMESTAMP, 0, Sorting::Index, -1, 0))?;
     .. etc
-     */
+    */
+
     let bsos = db.get_bsos(gbsos(
         uid,
         coll,
@@ -553,9 +554,7 @@ async fn delete_collection() -> Result<()> {
         user_id: uid.into(),
         collection: coll.to_string(),
     }).compat().await;
-    if !result.unwrap_err().is_colllection_not_found() {
-        panic!("Expected CollectionNotFound");
-    }
+    assert!(result.unwrap_err().is_colllection_not_found());
     Ok(())
 }
 
@@ -654,7 +653,6 @@ async fn put_bso() -> Result<()> {
     assert_eq!(bso.sortindex, Some(1));
 
     let bso2 = pbso(uid, coll, bid, Some("bar"), Some(2), Some(DEFAULT_BSO_TTL));
-    //db.with_delta(19, |db| {
     with_delta!(&db, 19, {
         db.put_bso(bso2).compat().await?;
         let ts = db.get_collection_timestamp(params::GetCollectionTimestamp {
@@ -865,15 +863,12 @@ async fn delete_bsos() -> Result<()> {
     }
     db.delete_bso(dbso(uid, coll, "b0")).compat().await?;
     // deleting non existant bid errors
-    if !db
+    assert!(db
         .delete_bso(dbso(uid, coll, "bxi0"))
         .compat()
         .await
         .unwrap_err()
-        .is_bso_not_found()
-    {
-        panic!("Expected BsoNotFound");
-    }
+        .is_bso_not_found());
     db.delete_bsos(dbsos(uid, coll, &["b1", "b2"])).compat().await?;
     for bid in bids {
         let bso = db.get_bso(gbso(uid, coll, &bid)).compat().await?;
@@ -933,9 +928,7 @@ async fn lock_for_read() -> Result<()> {
         collection: coll.to_owned(),
     }).compat().await?;
     let result = db.get_collection_id("NewCollection".to_owned()).compat().await;
-    if !result.unwrap_err().is_colllection_not_found() {
-        panic!("Expected CollectionNotFound");
-    }
+    assert!(result.unwrap_err().is_colllection_not_found());
     db.commit().compat().await?;
     Ok(())
 }
