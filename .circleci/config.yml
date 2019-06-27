@@ -60,6 +60,18 @@ commands:
       - run:
           name: cargo test
           command: cargo test --all --verbose
+      - run:
+          name: Setup db-tests
+          command: rustup show  # Should download the nightly in ./rust-toolchain
+          working_directory: db-tests
+      - run:
+          name: db-tests
+          command: cargo test --all --verbose
+          working_directory: db-tests
+      - run:
+          name: db-tests cleanup
+          command: cargo clean
+          working_directory: db-tests
 
   run-e2e-tests:
     steps:
