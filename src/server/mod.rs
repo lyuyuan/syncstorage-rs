@@ -5,13 +5,14 @@ use std::sync::Arc;
 //use actix::{System, SystemRunner};
 use actix_http::body::{MessageBody, Body};
 use actix_service::{NewService};
-use actix_web::{middleware::cors::Cors, web, App, HttpRequest, HttpResponse, HttpServer, dev::ServiceRequest, dev::ServiceResponse};
+use actix_cors::Cors;
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, dev::ServiceRequest, dev::ServiceResponse};
 use actix_web::error::Error;
 use actix_rt::{System, SystemRunner};
-//use num_cpus;
+// use num_cpus;
 
 use crate::web::handlers;
-use crate::web::middleware;
+// use crate::web::middleware;
 use crate::db::{mysql::MysqlDbPool, DbError, DbPool};
 use crate::settings::{Secrets, ServerLimits, Settings};
 

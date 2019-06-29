@@ -7,7 +7,7 @@ use actix_web::{
     Error, web::Data,
 };
 
-use actix_web::dev::{Body, MessageBody, ServiceRequest, ServiceResponse};
+use actix_web::dev::{Body, MessageBody, HttpResponseBuilder, ServiceRequest, ServiceResponse};
 
 use actix_service::{Service, Transform};
 
@@ -77,6 +77,7 @@ S::Future: 'static,
         }))
     }
 }
+
 /// Middleware to set the X-Weave-Timestamp header on all responses.
 pub struct WeaveTimestamp;
 
@@ -136,12 +137,15 @@ S::Future: 'static,
     }
 
     fn call(&mut self, sreq: ServiceRequest) -> Self::Future {
-        let (req, mut payload) = sreq.into_parts();
-        let req = req.clone();
-        let collection = CollectionParam::from_request(&req, &mut payload)
+        // `into_parts()` consumes the service request.
+        // that's bad.
+        // so, let's see if we can hack around that. 
+        // let (req, mut payload) = sreq.clone().into_parts();
+        let req = sreq.request_mut();
+        let collection = CollectionParam::extract(&req)
             .map(|param| param.collection.clone())
             .ok();
-        let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
+        let user_id = HawkIdentifier::extract(&req).unwrap();
         let in_transaction = collection.is_some();
         let data:Data<ServerState> = sreq.app_data().unwrap();
 
@@ -242,7 +246,7 @@ impl Default for PreConditionCheck {
 
 impl<S, B> Transform<S> for PreConditionCheck
 where
-B: MessageBody,
+B: 'static,
 S: Service<Request =ServiceRequest, Response=ServiceResponse<B>, Error= Error>,
 S::Future: 'static,
 {
@@ -266,7 +270,7 @@ pub struct PreConditionCheckMiddleware<S> {
 
 impl<S, B> Service for PreConditionCheckMiddleware<S>
 where
-B: MessageBody,
+B: 'static,
 S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error= Error>,
 S::Future: 'static,
 {
@@ -283,85 +287,89 @@ S::Future: 'static,
     fn call(&mut self, sreq: ServiceRequest) -> Self::Future {
         let (req, mut payload) = sreq.into_parts();
         // Pre check
-        let precondition = match PreConditionHeaderOpt::from_request(&req, &mut payload) {
+        let precondition = match PreConditionHeaderOpt::extract(&req) {
             Ok(precond) =>
                 match precond.opt {
                     Some(p) => p,
-                    None => return Box::new(future::ok(ServiceResponse::new(req, HttpResponse::Ok().finish().into_body())))
+                    None => {
+                        return Box::new(future::ok(ServiceResponse::new(req, HttpResponse::Ok().finish().into_body())))
+                    }
                 },
             Err(e) => {
                 return Box::new(future::ok(ServiceResponse::new(req, HttpResponse::InternalServerError().body(format!("Err: {:?}", e)).into_body())))
             }
         };
 
-        let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
-        let db = <Box<dyn Db>>::from_request(&req, &mut payload);
-        let collection = CollectionParam::from_request(&req, &mut payload).ok().map(|v| v.collection);
-        let bso = BsoParam::from_request(&req, &mut payload).ok();
+        let user_id = HawkIdentifier::extract(&req).unwrap();
+        let db = <Box<dyn Db>>::from_request(&req, &mut payload).unwrap();
+        let collection = CollectionParam::extract(&req).ok().map(|v| v.collection);
+        let bso = BsoParam::extract(&req).ok();
 
-        let fut = db.unwrap()
+        let resource_ts = db
             .extract_resource(user_id, collection, bso)
             .map_err(Into::into)
-            .and_then(move |resource_ts: SyncTimestamp| {
-                req.extensions_mut().insert(ResourceTimestamp(resource_ts));
-                let status = match precondition {
-                    PreConditionHeader::IfModifiedSince(header_ts) if resource_ts <= header_ts => {
-                        StatusCode::NOT_MODIFIED
-                    }
-                    PreConditionHeader::IfUnmodifiedSince(header_ts) if resource_ts > header_ts => {
-                        StatusCode::PRECONDITION_FAILED
-                    }
-                    _ => StatusCode::OK,
-                };
-                if status != StatusCode::OK {
-                    return Box::new(ServiceResponse::new(
+            .wait().unwrap();
+        
+        req.extensions_mut().insert(ResourceTimestamp(resource_ts));
+        let status = match precondition {
+            PreConditionHeader::IfModifiedSince(header_ts) if resource_ts <= header_ts => {
+                StatusCode::NOT_MODIFIED
+            }
+            PreConditionHeader::IfUnmodifiedSince(header_ts) if resource_ts > header_ts => {
+                StatusCode::PRECONDITION_FAILED
+            }
+            _ => StatusCode::OK,
+        };
+        if status != StatusCode::OK {
+            return Box::new(
+                future::ok(
+                    ServiceResponse::new(
                         req,
-                        HttpResponse::build(status)
+                        HttpResponse::Ok()
                         .header("X-Last-Modified", resource_ts.as_header())
-                        .body("")
-                    ));
-                };
-                self.service.call(sreq).map(|mut sresp| {
-                    let resp = sresp.response();
-                    if sresp.headers().contains_key("X-Last-Modified") {
-                        return Box::new(ServiceResponse::new(req, HttpResponse::build(StatusCode::OK).finish()))
-                    }
+                        .body("".to_owned())
+                        .into_body()
+                )
+            ));
+        };
+        // Make the call, then do all the post-processing steps.
+        Box::new(self.service.call(sreq).map(|mut resp| {
+            if resp.headers().contains_key("X-Last-Modified") {
+                //return ServiceResponse::new(req, HttpResponse::build(StatusCode::OK).body("".to_owned()).into_body());
+                return resp;
+            }
 
-                        // See if we already extracted one and use that if possible
-                    if let Some(resource_ts) = req.extensions().get::<ResourceTimestamp>() {
-                        let ts = resource_ts.0;
-                        if let Ok(ts_header) = header::HeaderValue::from_str(&ts.as_header()) {
-                            resp.headers_mut().insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
-                        }
-                        return Box::new(ServiceResponse::new(req, HttpResponse::build(StatusCode::OK).finish()));
-                    }
+            // See if we already extracted one and use that if possible
+            if let Some(resource_ts) = req.extensions().get::<ResourceTimestamp>() {
+                let ts = resource_ts.0;
+                let headers = resp.headers_mut();
+                if let Ok(ts_header) = header::HeaderValue::from_str(&ts.as_header()) {
+                    resp.headers_mut().insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
+                    //headers.insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
+                }
+                return resp;
+            }
 
-                    // Do the work needed to generate a timestamp otherwise
-                    let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
-                    let db = <Box<dyn Db>>::from_request(&req, &mut payload).unwrap();
-                    let collection = CollectionParam::from_request(&req, &mut payload)
-                        .ok()
-                        .map(|v| v.collection);
-                    let bso = BsoParam::from_request(&req, &mut payload).ok(); //.map(|v| v.bso);
-                    let fut = db
-                        .extract_resource(user_id, collection, bso)
-                        .and_then(move |resource_ts: SyncTimestamp| {
-                            if let Ok(ts_header) = header::HeaderValue::from_str(&resource_ts.as_header()) {
-                                resp.headers_mut().insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
-                            }
-                            ServiceResponse::new(req, *resp.clone())
-                        })
-                        .map_err(Into::into)
-                        .finish();
-                    return Box::new(future::ok(fut))
-                });
-            });
-
-        // post-check
-
-        Box::new(future::ok(fut))
+            // Do the work needed to generate a timestamp otherwise
+            let user_id = HawkIdentifier::from_request(&req, &mut payload).unwrap();
+            let db = <Box<dyn Db>>::from_request(&req, &mut payload).unwrap();
+            let collection = CollectionParam::from_request(&req, &mut payload)
+                .ok()
+                .map(|v| v.collection);
+            let bso = BsoParam::from_request(&req, &mut payload).ok(); //.map(|v| v.bso);
+            let resource_ts = db
+                .extract_resource(user_id, collection, bso)
+                .wait()
+                .unwrap();
+            if let Ok(ts_header) = header::HeaderValue::from_str(&resource_ts.as_header()) {
+                
+                resp.headers_mut().insert(header::HeaderName::from_static("X-Last-Modified"), ts_header);
+            }
+            return resp
+        }))
     }
 }
+
 
 #[cfg(test)]
 mod tests {

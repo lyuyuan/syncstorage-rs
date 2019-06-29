@@ -124,23 +124,8 @@ impl HawkPayload {
     }
 }
 
-impl FromRequest for HawkPayload {
-    /// Default [`Settings`](../../settings/struct.Settings.html) instance.
-    ///
-    /// Not hugely useful, all of the configurable settings
-    /// can be found on the [request state](../../server/struct.ServerState.html) instead.
-    type Config = ();
-
-    /// Result-wrapped `HawkPayload` instance.
-    //type Result = ApiResult<HawkPayload>;
-    type Future = ApiResult<HawkPayload>;
-
-    type Error = ApiError;
-
-    /// Parse and authenticate a Hawk payload
-    /// from the `Authorization` header
-    /// of an actix request object.
-    fn from_request(request: &HttpRequest, _: &mut Payload) -> Self::Future {
+impl HawkPayload {
+    fn extract(request: &HttpRequest) -> ApiResult<Self>{
         let ci = request.connection_info();
         let host_port: Vec<_> = ci.host().splitn(2, ':').collect();
         let host = host_port[0];
@@ -175,6 +160,27 @@ impl FromRequest for HawkPayload {
             &secrets,
             Utc::now().timestamp() as u64,
         )
+    }
+}
+
+impl FromRequest for HawkPayload {
+    /// Default [`Settings`](../../settings/struct.Settings.html) instance.
+    ///
+    /// Not hugely useful, all of the configurable settings
+    /// can be found on the [request state](../../server/struct.ServerState.html) instead.
+    type Config = ();
+
+    /// Result-wrapped `HawkPayload` instance.
+    //type Result = ApiResult<HawkPayload>;
+    type Future = ApiResult<HawkPayload>;
+
+    type Error = ApiError;
+
+    /// Parse and authenticate a Hawk payload
+    /// from the `Authorization` header
+    /// of an actix request object.
+    fn from_request(request: &HttpRequest, _: &mut Payload) -> Self::Future {
+        Self::extract(request)
     }
 }
 

@@ -4,10 +4,11 @@
 //! relevant types, and failing correctly with the appropriate errors if issues arise.
 use std::{self, collections::HashMap, str::FromStr};
 
+use actix_http::RequestHead;
 use actix_web::dev::{Payload};
 use actix_web::http::header::{HeaderValue, ACCEPT, CONTENT_TYPE};
 use actix_web::web::{Json, JsonConfig, Query};
-use actix_web::{error::ErrorInternalServerError, Error, FromRequest, HttpRequest};
+use actix_web::{http, error::ErrorInternalServerError, Error, FromRequest, HttpRequest};
 use futures::{future, Future};
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -16,6 +17,7 @@ use serde::{
     Deserialize, Serialize,
 };
 use serde_json::Value;
+use serde_urlencoded;
 use validator::{Validate, ValidationError};
 
 use crate::db::{util::SyncTimestamp, Db, DbError, DbErrorKind, Sorting};
@@ -330,17 +332,12 @@ pub struct BsoParam {
     pub bso: String,
 }
 
-impl FromRequest for BsoParam {
-    type Config = ();
-    //type Result = ApiResult<BsoParam>;
-    type Future = Result<Self, Error>;
-    type Error = Error;
-
-    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+impl BsoParam {
+    fn extract(req: &RequestHead) -> Result<Self, Error> {
         if let Some(bso) = req.extensions().get::<BsoParam>() {
             return Ok(bso.clone());
         }
-
+        /*
         let bso = Query::<BsoParam>::extract(req)
             .map_err(|e| {
                 ValidationErrorKind::FromDetails(
@@ -350,11 +347,27 @@ impl FromRequest for BsoParam {
                 )
             })?
             .into_inner();
+        */
+
+        let bso = serde_urlencoded::from_str::<Self>(req.uri.query())
+            .map(|val| Query::<Self>::from_query(val))
+            .unwrap();
         bso.validate().map_err(|e| {
             ValidationErrorKind::FromValidationErrors(e, RequestErrorLocation::Path)
         })?;
         req.extensions_mut().insert(bso.clone());
         Ok(bso)
+    }
+}
+
+impl FromRequest for BsoParam {
+    type Config = ();
+    //type Result = ApiResult<BsoParam>;
+    type Future = Result<Self, Error>;
+    type Error = Error;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        Self::extract(req.head())
     }
 }
 
@@ -365,13 +378,8 @@ pub struct CollectionParam {
     pub collection: String,
 }
 
-impl FromRequest for CollectionParam {
-    type Config = ();
-    //type Result = ApiResult<CollectionParam>;
-    type Future = Result<Self, Error>;
-    type Error = Error;
-
-    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+impl CollectionParam {
+    fn extract(req: &HttpRequest) -> Result<Self, Error> {
         if let Some(collection) = req.extensions().get::<CollectionParam>() {
             return Ok(collection.clone());
         }
@@ -393,6 +401,17 @@ impl FromRequest for CollectionParam {
         })?;
         req.extensions_mut().insert(collection.clone());
         Ok(collection)
+    }
+}
+
+impl FromRequest for CollectionParam {
+    type Config = ();
+    //type Result = ApiResult<CollectionParam>;
+    type Future = Result<Self, Error>;
+    type Error = Error;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        Self::extract(req)
     }
 }
 
@@ -663,19 +682,13 @@ pub struct HawkIdentifier {
     pub fxa_id: String,
 }
 
-impl FromRequest for HawkIdentifier {
-    type Config = ();
-    //type Result = ApiResult<HawkIdentifier>;
-    type Future = Result<Self, Error>;
-    type Error = Error;
-
-    /// Use HawkPayload extraction and format as HawkIdentifier.
-    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+impl HawkIdentifier {
+    fn extract(req: &HttpRequest) -> Result<Self, Error> {
         if let Some(user_id) = req.extensions().get::<HawkIdentifier>() {
             return Ok(user_id.clone());
         }
 
-        let payload = HawkPayload::from_request(&req, &mut payload)?;
+        let payload = HawkPayload::extract(&req)?;
         let path_uid = Query::<UidParam>::extract(&req).map_err(|e| {
             ValidationErrorKind::FromDetails(
                 e.to_string(),
@@ -697,6 +710,18 @@ impl FromRequest for HawkIdentifier {
         };
         req.extensions_mut().insert(user_id.clone());
         Ok(user_id)
+    }
+}
+
+impl FromRequest for HawkIdentifier {
+    type Config = ();
+    //type Result = ApiResult<HawkIdentifier>;
+    type Future = Result<Self, Error>;
+    type Error = Error;
+
+    /// Use HawkPayload extraction and format as HawkIdentifier.
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        Self::extract(req)
     }
 }
 
@@ -768,14 +793,8 @@ pub struct BsoQueryParams {
     pub full: bool,
 }
 
-impl FromRequest for BsoQueryParams {
-    type Config = ();
-    //type Result = ApiResult<BsoQueryParams>;
-    type Future = Result<Self, Error>;
-    type Error = Error;
-
-    /// Extract and validate the query parameters
-    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+impl BsoQueryParams {
+    fn extract(req: &HttpRequest) -> Result<Self, Error> {
         // TODO: serde deserialize the query ourselves to catch the serde error nicely
         let params = Query::<BsoQueryParams>::from_request(req, &mut payload)
             .map_err(|e| {
@@ -790,6 +809,18 @@ impl FromRequest for BsoQueryParams {
             ValidationErrorKind::FromValidationErrors(e, RequestErrorLocation::QueryString)
         })?;
         Ok(params)
+    }
+}
+
+impl FromRequest for BsoQueryParams {
+    type Config = ();
+    //type Result = ApiResult<BsoQueryParams>;
+    type Future = Result<Self, Error>;
+    type Error = Error;
+
+    /// Extract and validate the query parameters
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        Self::extract(req)
     }
 }
 
@@ -923,14 +954,8 @@ pub struct PreConditionHeaderOpt {
     pub opt: Option<PreConditionHeader>,
 }
 
-impl FromRequest for PreConditionHeaderOpt {
-    type Config = ();
-    //type Result = ApiResult<Option<PreConditionHeader>>;
-    type Future = Result<Self, Error>;
-    type Error = Error;
-
-    /// Extract and validate the precondition headers
-    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+impl PreConditionHeaderOpt {
+    fn extract(req: &HttpRequest) -> Result<Self, Error> {
         if let Some(precondition) = req.extensions().get::<Option<PreConditionHeader>>() {
             return Ok(Self {
                 opt: precondition.clone(),
@@ -983,6 +1008,18 @@ impl FromRequest for PreConditionHeaderOpt {
                 req.extensions_mut().insert(header.clone());
                 Self { opt: Some(header) }
             })
+    }
+}
+
+impl FromRequest for PreConditionHeaderOpt {
+    type Config = ();
+    //type Result = ApiResult<Option<PreConditionHeader>>;
+    type Future = Result<Self, Error>;
+    type Error = Error;
+
+    /// Extract and validate the precondition headers
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        Self::extract(req)
     }
 }
 
